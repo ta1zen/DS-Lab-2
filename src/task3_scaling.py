@@ -62,7 +62,22 @@ class ScalingAnalyzer:
         self.target_col = target_col
         self.scaled_datasets = {}
         self.scalers = {}
-        
+
+    def _feature_columns(self) -> List[str]:
+        numeric_cols = self.data.select_dtypes(include=[np.number]).columns
+        return [col for col in numeric_cols if col != self.target_col]
+
+    def _apply_scaler(self, name: str, scaler) -> pd.DataFrame:
+        scaled = self.data.copy()
+        feature_cols = self._feature_columns()
+
+        if len(feature_cols) > 0 and len(scaled) > 0:
+            scaled[feature_cols] = scaler.fit_transform(scaled[feature_cols])
+            self.scalers[name] = scaler
+
+        self.scaled_datasets[name] = scaled
+        return scaled
+                
     def apply_minmax_scaling(self, feature_range: Tuple[float, float] = (0, 1)) -> pd.DataFrame:
         """
         Apply Min-Max scaling to rescale features to a fixed range.
@@ -73,7 +88,7 @@ class ScalingAnalyzer:
         Returns:
             pd.DataFrame: DataFrame with features scaled to specified range.
         """
-        pass
+        return self._apply_scaler('minmax', MinMaxScaler(feature_range=feature_range))
     
     def apply_standard_scaling(self) -> pd.DataFrame:
         """
@@ -82,7 +97,7 @@ class ScalingAnalyzer:
         Returns:
             pd.DataFrame: DataFrame with standardized features.
         """
-        pass
+        return self._apply_scaler('standard', StandardScaler())
     
     def apply_robust_scaling(self) -> pd.DataFrame:
         """
@@ -91,7 +106,7 @@ class ScalingAnalyzer:
         Returns:
             pd.DataFrame: DataFrame with robust scaled features.
         """
-        pass
+        return self._apply_scaler('robust', RobustScaler())
     
     def apply_maxabs_scaling(self) -> pd.DataFrame:
         """
@@ -100,7 +115,7 @@ class ScalingAnalyzer:
         Returns:
             pd.DataFrame: DataFrame with maxabs scaled features.
         """
-        pass
+        return self._apply_scaler('maxabs', MaxAbsScaler())
     
     def apply_power_transform(self, method: str = 'yeo-johnson') -> pd.DataFrame:
         """
@@ -112,7 +127,7 @@ class ScalingAnalyzer:
         Returns:
             pd.DataFrame: DataFrame with power transformed and standardized features.
         """
-        pass
+        return self._apply_scaler('power', PowerTransformer(method=method, standardize=True))
     
     def get_scaling_summary(self) -> pd.DataFrame:
         """
@@ -121,7 +136,14 @@ class ScalingAnalyzer:
         Returns:
             DataFrame with statistics for each scaling method
         """
-        pass
+        feature_cols = self._feature_columns()
+        stats_rows = ['mean', 'std', 'min', 'max']
+
+        summary = {'original': self.original_data[feature_cols].describe().loc[stats_rows]}
+        for method_name, scaled_df in self.scaled_datasets.items():
+            summary[method_name] = scaled_df[feature_cols].describe().loc[stats_rows]
+
+        return pd.concat(summary, axis=1)
     
     def evaluate_model_performance(self, model_type: str = 'linear_regression',
                                    dataset_name: str = 'original') -> Dict[str, float]:
@@ -135,7 +157,41 @@ class ScalingAnalyzer:
         Returns:
             Dict[str, float]: Dictionary containing cv_score and cv_std.
         """
-        pass
+        if dataset_name == 'original':
+            dataset = self.original_data
+        elif dataset_name in self.scaled_datasets:
+            dataset = self.scaled_datasets[dataset_name]
+        else:
+            raise ValueError(f"Dataset '{dataset_name}' not found")
+
+        if not self.target_col or self.target_col not in dataset.columns:
+            raise ValueError("A valid target column is required for model evaluation")
+
+        models = {
+            'linear_regression': LinearRegression(),
+            'knn': KNeighborsClassifier(n_neighbors=5),
+            'svm': SVC(kernel='rbf', random_state=42),
+            'neural_network': MLPClassifier(hidden_layer_sizes=(50,), max_iter=500, random_state=42)
+        }
+        if model_type not in models:
+            raise ValueError(f"Unknown model type: '{model_type}'")
+
+        feature_cols = self._feature_columns()
+        X = dataset[feature_cols].fillna(dataset[feature_cols].median())
+        y = dataset[self.target_col]
+
+        if model_type == 'linear_regression':
+            cv = min(5, len(dataset))
+        else:
+            cv = max(2, min(5, int(y.value_counts().min())))
+
+        scores = cross_val_score(models[model_type], X, y, cv=cv)
+
+        return {
+            'cv_score': float(np.mean(scores)),
+            'cv_std': float(np.std(scores)),
+            'cv_scores': scores.tolist()
+        }
     
     def compare_model_performance(self, model_types: List[str] = None) -> pd.DataFrame:
         """
