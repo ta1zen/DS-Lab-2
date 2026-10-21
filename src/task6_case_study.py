@@ -192,7 +192,7 @@ class DataPreprocessor:
         elif strategy == 'iterative':
             if numeric_cols:
                 imputer = IterativeImputer(max_iter=10, random_state=42, keep_empty_features=True)
-                data[numeric_cols] = imputer.fit_transform(data[numeric_cols])
+                data[numeric_cols] = imputer.fit_transform(data[numeric_cols].to_numpy(dtype=float, copy=True))
             self._fill_categorical_mode(data, categorical_cols)
 
         else:

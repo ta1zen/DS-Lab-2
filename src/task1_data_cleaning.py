@@ -178,7 +178,7 @@ class DataQualityAnalyzer:
 
         if len(numeric_cols) > 0:
             imputer = IterativeImputer(max_iter=max_iter, random_state=42, keep_empty_features=True)
-            imputed[numeric_cols] = imputer.fit_transform(imputed[numeric_cols])
+            imputed[numeric_cols] = imputer.fit_transform(imputed[numeric_cols].to_numpy(dtype=float, copy=True))
 
         self.imputed_datasets['iterative'] = imputed
         return imputed

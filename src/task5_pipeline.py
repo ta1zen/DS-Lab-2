@@ -599,7 +599,7 @@ class PreprocessingPipeline:
         """
         fig, ax = plt.subplots(figsize=figsize)
         
-        bp = ax.boxplot([cv_scores], labels=['CV Scores'], patch_artist=True,
+        bp = ax.boxplot([cv_scores], tick_labels=['CV Scores'], patch_artist=True,
                        boxprops=dict(facecolor='lightblue'),
                        medianprops=dict(color='red', linewidth=2),
                        widths=0.5)

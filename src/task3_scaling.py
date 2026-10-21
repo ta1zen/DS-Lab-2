@@ -311,7 +311,7 @@ class ScalingAnalyzer:
                 data_to_plot.append(scaled_df[feature].dropna())
                 labels.append(method_name.upper())
             
-            bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True)
+            bp = ax.boxplot(data_to_plot, tick_labels=labels, patch_artist=True)
             
             # Color the boxes
             colors = ['skyblue'] + ['lightcoral'] * len(self.scaled_datasets)
