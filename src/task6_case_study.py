@@ -52,7 +52,14 @@ class DataPreprocessor:
         self.preprocessed_data = None
         self.quality_report = {}
         self.preprocessing_steps = []
-        
+
+    @staticmethod
+    def _fill_categorical_mode(data: pd.DataFrame, categorical_cols: List[str]) -> None:
+        for col in categorical_cols:
+            mode = data[col].mode()
+            if len(mode) > 0:
+                data[col] = data[col].fillna(mode.iloc[0])
+                
     def assess_data_quality(self) -> Dict[str, Any]:
         """
         Perform comprehensive data quality assessment.
@@ -74,14 +81,39 @@ class DataPreprocessor:
             'target_distribution': {}
         }
         
+        report['duplicates'] = int(report['duplicates'])
+
         # Missing values analysis
-        pass
-        
+        missing = self.data.isnull().sum()
+        missing_cols = missing[missing > 0]
+        report['missing_values'] = {
+            'total': int(missing.sum()),
+            'by_column': {col: int(count) for col, count in missing_cols.items()},
+            'percentage_by_column': {
+                col: float(count / len(self.data) * 100) for col, count in missing_cols.items()
+            }
+        }
+
         # Data types
-        pass
-        
+        report['data_types'] = {col: str(dtype) for col, dtype in self.data.dtypes.items()}
+        report['numeric_features'] = self.data.select_dtypes(include=[np.number]).columns.tolist()
+        report['categorical_features'] = [
+            col for col in self.data.select_dtypes(include=['object', 'category']).columns
+            if col != self.target_col
+        ]
+        report['datetime_features'] = self.data.select_dtypes(include=['datetime', 'datetimetz']).columns.tolist()
+
         # Target distribution
-        pass
+        if self.target_col in self.data.columns:
+            counts = self.data[self.target_col].value_counts()
+            report['target_distribution'] = {
+                (int(k) if isinstance(k, (int, np.integer)) else str(k)): int(v)
+                for k, v in counts.items()
+            }
+            report['class_balance'] = float(counts.min() / counts.max()) if len(counts) > 0 else 0.0
+
+        self.quality_report = report
+        return report
     
     def print_quality_report(self):
         """
@@ -138,19 +170,33 @@ class DataPreprocessor:
                        if col != self.target_col]
         categorical_cols = self.quality_report['categorical_features']
         
+        numeric_cols = [col for col in numeric_cols if col in data.columns]
+        categorical_cols = [col for col in categorical_cols if col in data.columns]
+
         if strategy == 'auto' or strategy == 'simple':
             # Numeric: median imputation
-            pass
-            
+            if numeric_cols:
+                imputer = SimpleImputer(strategy='median', keep_empty_features=True)
+                data[numeric_cols] = imputer.fit_transform(data[numeric_cols])
+
             # Categorical: mode imputation
             if categorical_cols:
-                pass
-        
+                self._fill_categorical_mode(data, categorical_cols)
+
         elif strategy == 'knn':
-            pass
-        
+            if numeric_cols:
+                imputer = KNNImputer(n_neighbors=5, keep_empty_features=True)
+                data[numeric_cols] = imputer.fit_transform(data[numeric_cols])
+            self._fill_categorical_mode(data, categorical_cols)
+
         elif strategy == 'iterative':
-            pass
+            if numeric_cols:
+                imputer = IterativeImputer(max_iter=10, random_state=42, keep_empty_features=True)
+                data[numeric_cols] = imputer.fit_transform(data[numeric_cols])
+            self._fill_categorical_mode(data, categorical_cols)
+
+        else:
+            raise ValueError(f"Unknown missing value strategy: '{strategy}'")
         
         self.data = data
         self.preprocessing_steps.append(f"Missing values handled: {strategy}")
@@ -169,9 +215,34 @@ class DataPreprocessor:
             pd.DataFrame: Data with outliers handled
         """
         data = self.data.copy()
-                                       
-        pass
-        
+        numeric_cols = [col for col in data.select_dtypes(include=[np.number]).columns
+                        if col != self.target_col]
+
+        outlier_mask = pd.DataFrame(False, index=data.index, columns=numeric_cols)
+        bounds = {}
+        for col in numeric_cols:
+            if method == 'iqr':
+                q1, q3 = data[col].quantile(0.25), data[col].quantile(0.75)
+                iqr = q3 - q1
+                lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            elif method == 'zscore':
+                mean, std = data[col].mean(), data[col].std()
+                lower, upper = mean - 3 * std, mean + 3 * std
+            else:
+                raise ValueError(f"Unknown outlier method: '{method}'")
+            bounds[col] = (lower, upper)
+            outlier_mask[col] = (data[col] < lower) | (data[col] > upper)
+
+        outliers_count = int(outlier_mask.values.sum())
+
+        if action == 'cap':
+            for col, (lower, upper) in bounds.items():
+                data[col] = data[col].clip(lower=lower, upper=upper)
+        elif action == 'remove':
+            data = data.loc[~outlier_mask.any(axis=1)]
+        else:
+            raise ValueError(f"Unknown outlier action: '{action}'")
+
         self.data = data
         self.preprocessing_steps.append(
             f"Outliers handled: {method} method, {action} action, {outliers_count} outliers"
@@ -189,9 +260,28 @@ class DataPreprocessor:
             pd.DataFrame: Data with encoded categorical features
         """
         data = self.data.copy()
-        
-        pass
-        
+
+        datetime_cols = data.select_dtypes(include=['datetime', 'datetimetz']).columns.tolist()
+        for col in datetime_cols:
+            data[f'{col}_year'] = data[col].dt.year
+            data[f'{col}_month'] = data[col].dt.month
+            data[f'{col}_day'] = data[col].dt.day
+            data[f'{col}_dayofweek'] = data[col].dt.dayofweek
+        data = data.drop(columns=datetime_cols)
+
+        categorical_cols = [col for col in data.select_dtypes(include=['object', 'category']).columns
+                            if col != self.target_col]
+
+        for col in categorical_cols:
+            use_onehot = method == 'onehot' or (method == 'auto' and data[col].nunique() <= 10)
+            if use_onehot:
+                dummies = pd.get_dummies(data[col], prefix=col, dtype=int)
+                data = pd.concat([data.drop(columns=[col]), dummies], axis=1)
+            elif method in ('auto', 'label'):
+                data[col] = LabelEncoder().fit_transform(data[col].astype(str))
+            else:
+                raise ValueError(f"Unknown encoding method: '{method}'")
+
         self.data = data
         self.preprocessing_steps.append(f"Categorical encoding: {method}, datetime features extracted")
         return data
@@ -212,19 +302,33 @@ class DataPreprocessor:
         
         new_features = []
         
+        numeric_cols = [col for col in numeric_cols if col in data.columns]
+
         # Statistical features
         if len(numeric_cols) >= 2:
             # Mean of all numeric features
-            pass
-            
+            data['mean_all_features'] = data[numeric_cols].mean(axis=1)
+            new_features.append('mean_all_features')
+
             # Standard deviation
-            pass
-            
+            data['std_all_features'] = data[numeric_cols].std(axis=1)
+            new_features.append('std_all_features')
+
             # Min and max
-            pass
-        
+            data['min_all_features'] = data[numeric_cols].min(axis=1)
+            data['max_all_features'] = data[numeric_cols].max(axis=1)
+            new_features.extend(['min_all_features', 'max_all_features'])
+
         # Interaction features (limited to avoid explosion)
-        pass
+        if domain_features:
+            top_cols = numeric_cols[:3]
+            for i, col1 in enumerate(top_cols):
+                for col2 in top_cols[i + 1:]:
+                    product_name = f'{col1}_x_{col2}'
+                    ratio_name = f'{col1}_ratio_{col2}'
+                    data[product_name] = data[col1] * data[col2]
+                    data[ratio_name] = data[col1] / (data[col2].abs() + 1)
+                    new_features.extend([product_name, ratio_name])
         
         self.data = data
         self.preprocessing_steps.append(f"Feature engineering: {len(new_features)} new features created")
@@ -241,9 +345,19 @@ class DataPreprocessor:
             pd.DataFrame: Data with scaled features
         """
         data = self.data.copy()
-        
-        pass
-        
+
+        if method == 'standard':
+            scaler = StandardScaler()
+        elif method == 'robust':
+            scaler = RobustScaler()
+        else:
+            raise ValueError(f"Unknown scaling method: '{method}'")
+
+        feature_cols = [col for col in data.select_dtypes(include=[np.number]).columns
+                        if col != self.target_col]
+        if feature_cols:
+            data[feature_cols] = scaler.fit_transform(data[feature_cols])
+
         self.data = data
         self.preprocessing_steps.append(f"Feature scaling: {method}")
         return data
